@@ -10,30 +10,22 @@ class Settings(BaseSettings):
     etherscan_api_key: str = ""
     eth_poll_seconds: int = 4
 
-    # ZAN API Key（明文，由用户在 .env 中手动填写）
+    # ZAN API Key（明文，由用户在 .env 中手动填写，仅改这一处即可）
     zan_api_key: str = "your_zan_api_key_here"
 
-    # Ethereum — ZAN WebSocket（优先级 1，直接使用完整 URL，包含 apiKey）
-    zan_eth_ws_url: str = (
-        "wss://api.zan.top/node/ws/v1/eth/mainnet/your_zan_api_key_here"
-    )
-    zan_eth_ws_enabled: bool = True
+    # Ethereum — ZAN WebSocket（优先级 1），基础路径不含 apiKey
+    zan_eth_ws_base: str = "wss://api.zan.top/node/ws/v1/eth/mainnet"
+    zan_eth_ws_enabled: bool = False
 
-    # Ethereum — ZAN JSON-RPC HTTP（优先级 2 / WS 关闭时启用）
-    zan_eth_rpc_url: str = (
-        "https://api.zan.top/node/v1/eth/mainnet/your_zan_api_key_here"
-    )
+    # Ethereum — ZAN JSON-RPC HTTP（优先级 2 / WS 关闭时启用），基础路径不含 apiKey
+    zan_eth_rpc_base: str = "https://api.zan.top/node/v1/eth/mainnet"
 
-    # Solana — ZAN WebSocket blockSubscribe（优先级 1，完整 URL）
-    zan_sol_ws_url: str = (
-        "wss://api.zan.top/node/ws/v1/solana/mainnet/your_zan_api_key_here"
-    )
+    # Solana — ZAN WebSocket blockSubscribe（优先级 1），基础路径不含 apiKey
+    zan_sol_ws_base: str = "wss://api.zan.top/node/ws/v1/solana/mainnet"
     zan_ws_enabled: bool = True
 
-    # Solana — ZAN JSON-RPC HTTP（优先级 2 / WS 关闭时启用）
-    zan_sol_rpc_url: str = (
-        "https://api.zan.top/node/v1/solana/mainnet/your_zan_api_key_here"
-    )
+    # Solana — ZAN JSON-RPC HTTP（优先级 2 / WS 关闭时启用），基础路径不含 apiKey
+    zan_sol_rpc_base: str = "https://api.zan.top/node/v1/solana/mainnet"
     sol_poll_seconds: int = 8
 
     # Solana — ZAN gRPC Yellowstone（需 ZAN 控制台开通）
@@ -46,6 +38,24 @@ class Settings(BaseSettings):
 
     # Frontend
     cors_origins: str = "http://localhost:5173"
+
+    # ── helpers ────────────────────────────────────────────────────────────────
+
+    def _url(self, base: str) -> str:
+        """拼接出完整的 ZAN 节点 URL：<base>/<apiKey>。"""
+        return f"{base.rstrip('/')}/{self.zan_api_key}"
+
+    def resolved_eth_ws_url(self) -> str:
+        return self._url(self.zan_eth_ws_base)
+
+    def resolved_eth_rpc_url(self) -> str:
+        return self._url(self.zan_eth_rpc_base)
+
+    def resolved_sol_ws_url(self) -> str:
+        return self._url(self.zan_sol_ws_base)
+
+    def resolved_sol_rpc_url(self) -> str:
+        return self._url(self.zan_sol_rpc_base)
 
     @property
     def cors_origin_list(self) -> list[str]:

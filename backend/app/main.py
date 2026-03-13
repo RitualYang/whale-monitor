@@ -60,12 +60,12 @@ async def lifespan(_: FastAPI):
     price_client = PriceClient(http_client)
 
     # Choose ETH HTTP client: ZAN JSON-RPC (preferred) or Etherscan (legacy)
-    eth_http_client = ZanEthClient(http_client, settings.zan_eth_rpc_url)
+    eth_http_client = ZanEthClient(http_client, settings.resolved_eth_rpc_url())
 
     # JSON-RPC poller — ETH and SOL HTTP polling (disabled per-chain when WS is active)
     poller = ChainPoller(
         eth_client=eth_http_client,
-        sol_client=SolanaClient(http_client, settings.zan_sol_rpc_url),
+        sol_client=SolanaClient(http_client, settings.resolved_sol_rpc_url()),
         price_client=price_client,
         store=store,
         on_event=ws_hub.broadcast_event,
@@ -75,7 +75,7 @@ async def lifespan(_: FastAPI):
 
     # ETH Priority 1 — WebSocket newHeads (real-time, no extra permissions)
     eth_ws = ZanEthWsSubscriber(
-        ws_url=settings.zan_eth_ws_url,
+        ws_url=settings.resolved_eth_ws_url(),
         store=store,
         on_event=ws_hub.broadcast_event,
         eth_usd_getter=lambda: poller.prices.get("ETH", 0.0),
@@ -83,7 +83,7 @@ async def lifespan(_: FastAPI):
 
     # SOL Priority 1 — WebSocket blockSubscribe (real-time, no extra permissions)
     sol_ws = ZanSolanaWsSubscriber(
-        ws_url=settings.zan_sol_ws_url,
+        ws_url=settings.resolved_sol_ws_url(),
         store=store,
         on_event=ws_hub.broadcast_event,
         sol_usd_getter=lambda: poller.prices.get("SOL", 0.0),
@@ -108,6 +108,7 @@ async def lifespan(_: FastAPI):
     await poller.refresh_prices()
     poller.start()
 
+    # WS 始终保持监听，只由配置开关决定是否启用
     if settings.zan_eth_ws_enabled:
         eth_ws.start()
 
@@ -162,7 +163,7 @@ async def health() -> HealthResponse:
 
 @app.post("/api/source")
 async def set_source(req: SourceRequest) -> dict[str, Any]:
-    """Switch ETH or SOL data source between WebSocket and HTTP polling."""
+    """Switch ETH or SOL *preferred*数据源（仅控制是否开启 HTTP 轮询，WS 始终保持监听）."""
     poller: ChainPoller = state["poller"]
     eth_ws: ZanEthWsSubscriber = state["eth_ws"]
     sol_ws: ZanSolanaWsSubscriber = state["sol_ws"]
@@ -170,10 +171,10 @@ async def set_source(req: SourceRequest) -> dict[str, Any]:
 
     if req.eth_source and req.eth_source != state["eth_source"]:
         if req.eth_source == "ws":
+            # WS 始终保持监听，这里只关闭 ETH HTTP 轮询以减少请求
             poller.disable_eth_polling()
-            eth_ws.start()
         else:
-            eth_ws.stop()
+            # 选择轮询时，开启 ETH HTTP 轮询，WS 仍继续作为备份通道
             poller.enable_eth_polling()
         state["eth_source"] = req.eth_source
         changed.append(f"eth→{req.eth_source}")
@@ -181,9 +182,7 @@ async def set_source(req: SourceRequest) -> dict[str, Any]:
     if req.sol_source and req.sol_source != state["sol_source"]:
         if req.sol_source == "ws":
             poller.disable_sol_polling()
-            sol_ws.start()
         else:
-            sol_ws.stop()
             poller.enable_sol_polling()
         state["sol_source"] = req.sol_source
         changed.append(f"sol→{req.sol_source}")
