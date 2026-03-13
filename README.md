@@ -16,26 +16,27 @@
                        │ WebSocket / HTTP
 ┌──────────────────────▼──────────────────────────────────┐
 │                  FastAPI 后端服务                         │
-│  ┌───────────────┐   ┌────────────────┐   ┌──────────┐  │
-│  │  ChainPoller  │   │ZanSolanaGrpc   │   │  WsHub   │  │
-│  │  (APScheduler)│   │Subscriber      │   │ 广播推送 │  │
-│  └──────┬────────┘   └───────┬────────┘   └────┬─────┘  │
-│         │                   │                  │        │
-│  ┌──────▼────────────────────▼────────────────▼─────┐   │
-│  │            InMemoryEventStore（最近 500 条）      │   │
-│  └──────────────────────────────────────────────────┘   │
+│  ┌─────────────┐ ┌──────────────┐ ┌──────────┐          │
+│  │ ChainPoller │ │ZanSolanaWs   │ │ZanSolana │          │
+│  │ ETH 轮询    │ │Subscriber    │ │GrpcSub   │          │
+│  │ SOL 备用    │ │(优先级 1)    │ │(优先级 2)│          │
+│  └──────┬──────┘ └──────┬───────┘ └────┬─────┘          │
+│         │              │              │   ┌──────────┐  │
+│  ┌──────▼──────────────▼──────────────▼─▶ │  WsHub   │  │
+│  │       InMemoryEventStore（最近 500 条） │  广播推送│  │
+│  └──────────────────────────────────────┘ └──────────┘  │
 └─────────────────────────────────────────────────────────┘
-         │                   │
-┌────────▼────────┐  ┌───────▼────────────────────────────┐
-│  Etherscan API  │  │  ZAN 节点服务 (api.zan.top)         │
-│  ETH 区块轮询   │  │  Solana JSON-RPC  轮询（主路径）    │
-│  每 4 秒一次    │  │  Solana gRPC Yellowstone（升级路径）│
-└─────────────────┘  └────────────────────────────────────┘
-         │                   │
-┌────────▼───────────────────▼────────┐
-│   Binance 公开 API（价格换算）       │
-│   ETH/USDT  SOL/USDT  每 20 秒刷新  │
-└─────────────────────────────────────┘
+         │              │              │
+┌────────▼──────┐ ┌─────▼──────────┐ ┌▼────────────────┐
+│ Etherscan API │ │ ZAN WebSocket  │ │ ZAN gRPC        │
+│ ETH 区块轮询  │ │ blockSubscribe │ │ Yellowstone     │
+│ 每 4 秒一次   │ │ 实时推送       │ │（需控制台开通） │
+└───────────────┘ └────────────────┘ └─────────────────┘
+         │              │
+┌────────▼──────────────▼─────────┐
+│   Binance 公开 API（价格换算）   │
+│   ETH/USDT  SOL/USDT  每 20 秒  │
+└─────────────────────────────────┘
 ```
 
 ---
@@ -66,8 +67,9 @@ ai-面试/
 │       ├── store.py            # 内存事件缓存（deque，防重复）
 │       ├── clients.py          # HTTP 客户端（Etherscan / Solana RPC / Binance）
 │       ├── detector.py         # 大额转账识别逻辑（ETH + SOL）
-│       ├── poller.py           # 定时轮询（ETH 主监控 + SOL JSON-RPC 轮询）
-│       ├── sol_grpc.py         # ZAN Solana gRPC 流式订阅（Yellowstone）
+│       ├── poller.py           # 定时轮询（ETH 主监控；SOL WS 启用时轮询自动关闭）
+│       ├── sol_ws.py           # ZAN Solana WebSocket 流式订阅（blockSubscribe，优先级 1）
+│       ├── sol_grpc.py         # ZAN Solana gRPC 流式订阅（Yellowstone，优先级 2）
 │       └── proto_gen/          # 自动生成的 gRPC Python 存根
 │           ├── __init__.py
 │           ├── geyser_pb2.py
@@ -146,14 +148,18 @@ npm run dev
 ETHERSCAN_API_KEY=your_etherscan_api_key   # 申请：https://etherscan.io
 ETH_POLL_SECONDS=4                          # ETH 区块拉取间隔（秒）
 
-# ── Solana（ZAN 节点，JSON-RPC 主路径，开箱即用）─────────
+# ── Solana 优先级 1：WebSocket blockSubscribe（实时，开箱即用）─
 ZAN_API_KEY=25a51188cb25466986e5d7e48c6217e9
-ZAN_SOL_RPC_URL=https://api.zan.top/node/v1/solana/mainnet/25a51188cb25466986e5d7e48c6217e9
-SOL_POLL_SECONDS=8                          # Solana 轮询间隔（秒）
+ZAN_SOL_WS_URL=wss://api.zan.top/node/ws/v1/solana/mainnet/25a51188cb25466986e5d7e48c6217e9
+ZAN_WS_ENABLED=true        # 开启后 Solana JSON-RPC 轮询自动停用
 
-# ── Solana gRPC（升级路径，需在 ZAN 控制台开通 Geyser 权限）─
+# ── Solana 优先级 2：JSON-RPC 轮询（WS 关闭时自动启用）────
+ZAN_SOL_RPC_URL=https://api.zan.top/node/v1/solana/mainnet/25a51188cb25466986e5d7e48c6217e9
+SOL_POLL_SECONDS=8          # Solana 轮询间隔（秒，WS 关闭时生效）
+
+# ── Solana 优先级 3：gRPC Yellowstone（需 ZAN 控制台开通）──
 ZAN_GRPC_ENDPOINT=grpc.zan.top:443
-ZAN_GRPC_ENABLED=true    # 未开通 gRPC 时设为 false 可消除重试日志
+ZAN_GRPC_ENABLED=false     # 未开通 gRPC 时保持 false；WS 已满足实时需求
 
 # ── 阈值与存储 ────────────────────────────────────────────
 ETH_USD_THRESHOLD=100000   # 大额转账阈值（USD）
@@ -190,14 +196,18 @@ CORS_ORIGINS=http://localhost:5173
 
 ---
 
-## Solana 双路径说明
+## Solana 三级数据源优先级
 
-| 路径 | 方式 | 延迟 | 条件 |
-|------|------|------|------|
-| JSON-RPC 轮询 | 定时拉取最新 Slot 并解析交易 | ~8 秒 | 开箱即用 |
-| gRPC Yellowstone 流 | 长连接实时推送每笔交易 | < 1 秒 | 需在 ZAN 控制台开通 Geyser 权限 |
+| 优先级 | 路径 | 方式 | 延迟 | 条件 |
+|--------|------|------|------|------|
+| 1 ★ | **WebSocket blockSubscribe** | ZAN WS 端点实时推送完整区块 | < 1 秒 | 开箱即用，默认开启 |
+| 2 | gRPC Yellowstone 流 | 长连接推送每笔交易（更底层） | < 1 秒 | 需在 ZAN 控制台开通 Geyser 权限 |
+| 3 | JSON-RPC HTTP 轮询 | 定时拉取最新 Slot 并解析区块 | ~8 秒 | 开箱即用，WS 关闭时自动启用 |
 
-两条路径**同时运行**，gRPC 连接成功时会提供更低延迟的实时数据；未开通时 JSON-RPC 轮询作为保底路径持续工作。
+**运行逻辑：**
+- `ZAN_WS_ENABLED=true`（默认）：启动 WS 实时订阅，Solana JSON-RPC 轮询**自动停用**，节省请求配额
+- `ZAN_GRPC_ENABLED=true`：同时启动 gRPC，与 WS 并行；EventStore 自动去重，不会产生重复事件
+- WS / gRPC 断连后均有指数退避重连机制（最长 60 秒间隔）
 
 开通 gRPC：登录 [zan.top](https://zan.top) → API Keys → 对应 Key → 开启「Yellowstone gRPC / Geyser」
 
@@ -264,7 +274,8 @@ self.scheduler.add_job(
 | 后端框架 | FastAPI + uvicorn |
 | 异步 HTTP | httpx |
 | 定时调度 | APScheduler |
-| gRPC 流式 | grpcio + grpcio-tools（Yellowstone Geyser 协议） |
+| WS 流式（Solana 优先） | websockets（ZAN blockSubscribe） |
+| gRPC 流式（Solana 备用） | grpcio + grpcio-tools（Yellowstone Geyser 协议） |
 | 数据验证 | Pydantic v2 |
 | 前端框架 | React 18 + Vite |
 | 实时通信 | WebSocket（浏览器原生） |
