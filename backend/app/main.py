@@ -13,6 +13,7 @@ from .config import settings
 from .poller import ChainPoller
 from .schemas import HealthResponse, WhaleEvent
 from .sol_grpc import ZanSolanaGrpcSubscriber
+from .sol_ws import ZanSolanaWsSubscriber
 from .store import EventStore
 
 
@@ -51,16 +52,25 @@ async def lifespan(_: FastAPI):
     http_client = httpx.AsyncClient()
     price_client = PriceClient(http_client)
 
-    # JSON-RPC poller (Ethereum + Solana via ZAN, always available)
+    # JSON-RPC poller — Ethereum always; Solana only when WS is disabled
     poller = ChainPoller(
         eth_client=EtherscanClient(http_client, settings.etherscan_api_key),
         sol_client=SolanaClient(http_client, settings.zan_sol_rpc_url),
         price_client=price_client,
         store=store,
         on_event=ws_hub.broadcast_event,
+        sol_polling_enabled=not settings.zan_ws_enabled,
     )
 
-    # gRPC streaming subscriber (Solana upgrade path, optional)
+    # Priority 1 — WebSocket blockSubscribe (real-time, no extra permissions needed)
+    sol_ws = ZanSolanaWsSubscriber(
+        ws_url=settings.zan_sol_ws_url,
+        store=store,
+        on_event=ws_hub.broadcast_event,
+        sol_usd_getter=lambda: poller.prices.get("SOL", 0.0),
+    )
+
+    # Priority 2 — gRPC Yellowstone (needs dashboard activation on ZAN)
     sol_grpc = ZanSolanaGrpcSubscriber(
         grpc_endpoint=settings.zan_grpc_endpoint,
         api_key=settings.zan_api_key,
@@ -70,10 +80,14 @@ async def lifespan(_: FastAPI):
     )
 
     state["poller"] = poller
+    state["sol_ws"] = sol_ws
     state["sol_grpc"] = sol_grpc
 
     await poller.refresh_prices()
     poller.start()
+
+    if settings.zan_ws_enabled:
+        sol_ws.start()
 
     if settings.zan_grpc_enabled:
         sol_grpc.start()
@@ -81,6 +95,8 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
+        if settings.zan_ws_enabled:
+            sol_ws.stop()
         if settings.zan_grpc_enabled:
             sol_grpc.stop()
         poller.stop()
@@ -100,11 +116,17 @@ app.add_middleware(
 @app.get("/api/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     poller: ChainPoller = state["poller"]
+    sol_ws: ZanSolanaWsSubscriber = state["sol_ws"]
     sol_grpc: ZanSolanaGrpcSubscriber = state["sol_grpc"]
+    latest_sol = (
+        sol_ws.latest_slot
+        or sol_grpc.latest_slot
+        or poller.latest_sol_slot
+    )
     return HealthResponse(
         status="ok",
         latest_eth_block=poller.latest_eth_block,
-        latest_sol_slot=poller.latest_sol_slot or sol_grpc.latest_slot,
+        latest_sol_slot=latest_sol,
         cached_events=store.size,
     )
 

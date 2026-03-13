@@ -10,14 +10,20 @@ class Settings(BaseSettings):
     etherscan_api_key: str = ""
     eth_poll_seconds: int = 4
 
-    # Solana — ZAN JSON-RPC (主路径，无需额外授权，立即可用)
+    # Solana — ZAN WebSocket blockSubscribe (最高优先级，实时推送)
     zan_api_key: str = "25a51188cb25466986e5d7e48c6217e9"
+    zan_sol_ws_url: str = (
+        "wss://api.zan.top/node/ws/v1/solana/mainnet/25a51188cb25466986e5d7e48c6217e9"
+    )
+    zan_ws_enabled: bool = True
+
+    # Solana — ZAN JSON-RPC (HTTP 轮询，当 WS 不可用时自动启用)
     zan_sol_rpc_url: str = (
         "https://api.zan.top/node/v1/solana/mainnet/25a51188cb25466986e5d7e48c6217e9"
     )
     sol_poll_seconds: int = 8
 
-    # Solana — ZAN gRPC Yellowstone (升级路径，需在 ZAN 控制台手动开通)
+    # Solana — ZAN gRPC Yellowstone (备用，需在 ZAN 控制台手动开通)
     zan_grpc_endpoint: str = "grpc.zan.top:443"
     zan_grpc_enabled: bool = True
 

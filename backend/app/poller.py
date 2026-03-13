@@ -28,12 +28,14 @@ class ChainPoller:
         price_client: PriceClient,
         store: EventStore,
         on_event,
+        sol_polling_enabled: bool = True,
     ) -> None:
         self.eth_client = eth_client
         self.sol_client = sol_client
         self.price_client = price_client
         self.store = store
         self.on_event = on_event
+        self.sol_polling_enabled = sol_polling_enabled
         self.scheduler = AsyncIOScheduler()
         self.latest_eth_block: int | None = None
         self.latest_sol_slot: int | None = None
@@ -52,19 +54,25 @@ class ChainPoller:
             max_instances=1,
             coalesce=True,
         )
-        self.scheduler.add_job(
-            self.poll_solana,
-            "interval",
-            seconds=settings.sol_poll_seconds,
-            max_instances=1,
-            coalesce=True,
-        )
+        if self.sol_polling_enabled:
+            self.scheduler.add_job(
+                self.poll_solana,
+                "interval",
+                seconds=settings.sol_poll_seconds,
+                max_instances=1,
+                coalesce=True,
+            )
+            logger.info(
+                "ChainPoller started — ETH every %ds, SOL polling every %ds",
+                settings.eth_poll_seconds,
+                settings.sol_poll_seconds,
+            )
+        else:
+            logger.info(
+                "ChainPoller started — ETH every %ds, SOL polling DISABLED (WS active)",
+                settings.eth_poll_seconds,
+            )
         self.scheduler.start()
-        logger.info(
-            "ChainPoller started — ETH every %ds, SOL every %ds",
-            settings.eth_poll_seconds,
-            settings.sol_poll_seconds,
-        )
 
     def stop(self) -> None:
         self.scheduler.shutdown(wait=False)

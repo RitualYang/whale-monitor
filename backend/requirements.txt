@@ -8,3 +8,4 @@ python-dotenv
 grpcio
 grpcio-tools
 base58
+websockets
