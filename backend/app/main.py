@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import json
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Literal
 
 import httpx
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
-from .clients import EtherscanClient, PriceClient, SolanaClient
+from .clients import EtherscanClient, PriceClient, SolanaClient, ZanEthClient
 from .config import settings
+from .eth_ws import ZanEthWsSubscriber
 from .poller import ChainPoller
 from .schemas import HealthResponse, WhaleEvent
 from .sol_grpc import ZanSolanaGrpcSubscriber
@@ -47,22 +49,39 @@ ws_hub = WsHub()
 state: dict[str, Any] = {}
 
 
+class SourceRequest(BaseModel):
+    eth_source: Literal["ws", "polling"] | None = None
+    sol_source: Literal["ws", "polling"] | None = None
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     http_client = httpx.AsyncClient()
     price_client = PriceClient(http_client)
 
-    # JSON-RPC poller — Ethereum always; Solana only when WS is disabled
+    # Choose ETH HTTP client: ZAN JSON-RPC (preferred) or Etherscan (legacy)
+    eth_http_client = ZanEthClient(http_client, settings.zan_eth_rpc_url)
+
+    # JSON-RPC poller — ETH and SOL HTTP polling (disabled per-chain when WS is active)
     poller = ChainPoller(
-        eth_client=EtherscanClient(http_client, settings.etherscan_api_key),
+        eth_client=eth_http_client,
         sol_client=SolanaClient(http_client, settings.zan_sol_rpc_url),
         price_client=price_client,
         store=store,
         on_event=ws_hub.broadcast_event,
+        eth_polling_enabled=not settings.zan_eth_ws_enabled,
         sol_polling_enabled=not settings.zan_ws_enabled,
     )
 
-    # Priority 1 — WebSocket blockSubscribe (real-time, no extra permissions needed)
+    # ETH Priority 1 — WebSocket newHeads (real-time, no extra permissions)
+    eth_ws = ZanEthWsSubscriber(
+        ws_url=settings.zan_eth_ws_url,
+        store=store,
+        on_event=ws_hub.broadcast_event,
+        eth_usd_getter=lambda: poller.prices.get("ETH", 0.0),
+    )
+
+    # SOL Priority 1 — WebSocket blockSubscribe (real-time, no extra permissions)
     sol_ws = ZanSolanaWsSubscriber(
         ws_url=settings.zan_sol_ws_url,
         store=store,
@@ -70,7 +89,7 @@ async def lifespan(_: FastAPI):
         sol_usd_getter=lambda: poller.prices.get("SOL", 0.0),
     )
 
-    # Priority 2 — gRPC Yellowstone (needs dashboard activation on ZAN)
+    # SOL Priority 2 — gRPC Yellowstone (needs ZAN dashboard activation)
     sol_grpc = ZanSolanaGrpcSubscriber(
         grpc_endpoint=settings.zan_grpc_endpoint,
         api_key=settings.zan_api_key,
@@ -80,11 +99,17 @@ async def lifespan(_: FastAPI):
     )
 
     state["poller"] = poller
+    state["eth_ws"] = eth_ws
     state["sol_ws"] = sol_ws
     state["sol_grpc"] = sol_grpc
+    state["eth_source"] = "ws" if settings.zan_eth_ws_enabled else "polling"
+    state["sol_source"] = "ws" if settings.zan_ws_enabled else "polling"
 
     await poller.refresh_prices()
     poller.start()
+
+    if settings.zan_eth_ws_enabled:
+        eth_ws.start()
 
     if settings.zan_ws_enabled:
         sol_ws.start()
@@ -95,6 +120,8 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
+        if settings.zan_eth_ws_enabled:
+            eth_ws.stop()
         if settings.zan_ws_enabled:
             sol_ws.stop()
         if settings.zan_grpc_enabled:
@@ -116,19 +143,56 @@ app.add_middleware(
 @app.get("/api/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     poller: ChainPoller = state["poller"]
+    eth_ws: ZanEthWsSubscriber = state["eth_ws"]
     sol_ws: ZanSolanaWsSubscriber = state["sol_ws"]
     sol_grpc: ZanSolanaGrpcSubscriber = state["sol_grpc"]
-    latest_sol = (
-        sol_ws.latest_slot
-        or sol_grpc.latest_slot
-        or poller.latest_sol_slot
-    )
+    latest_eth = eth_ws.latest_block or poller.latest_eth_block
+    latest_sol = sol_ws.latest_slot or sol_grpc.latest_slot or poller.latest_sol_slot
     return HealthResponse(
         status="ok",
-        latest_eth_block=poller.latest_eth_block,
+        latest_eth_block=latest_eth,
         latest_sol_slot=latest_sol,
         cached_events=store.size,
+        eth_source=state["eth_source"],
+        eth_ws_connected=eth_ws.connected,
+        sol_source=state["sol_source"],
+        sol_ws_connected=sol_ws.connected,
     )
+
+
+@app.post("/api/source")
+async def set_source(req: SourceRequest) -> dict[str, Any]:
+    """Switch ETH or SOL data source between WebSocket and HTTP polling."""
+    poller: ChainPoller = state["poller"]
+    eth_ws: ZanEthWsSubscriber = state["eth_ws"]
+    sol_ws: ZanSolanaWsSubscriber = state["sol_ws"]
+    changed: list[str] = []
+
+    if req.eth_source and req.eth_source != state["eth_source"]:
+        if req.eth_source == "ws":
+            poller.disable_eth_polling()
+            eth_ws.start()
+        else:
+            eth_ws.stop()
+            poller.enable_eth_polling()
+        state["eth_source"] = req.eth_source
+        changed.append(f"eth→{req.eth_source}")
+
+    if req.sol_source and req.sol_source != state["sol_source"]:
+        if req.sol_source == "ws":
+            poller.disable_sol_polling()
+            sol_ws.start()
+        else:
+            sol_ws.stop()
+            poller.enable_sol_polling()
+        state["sol_source"] = req.sol_source
+        changed.append(f"sol→{req.sol_source}")
+
+    return {
+        "eth_source": state["eth_source"],
+        "sol_source": state["sol_source"],
+        "changed": changed or ["no change"],
+    }
 
 
 @app.get("/api/events", response_model=list[WhaleEvent])

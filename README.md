@@ -62,12 +62,13 @@ ai-面试/
 │   └── app/
 │       ├── __init__.py
 │       ├── main.py             # FastAPI 应用入口、路由、WebSocket
-│       ├── config.py           # 环境变量配置加载
+│       ├── config.py           # 环境变量配置加载（直接使用完整 ZAN URL）
 │       ├── schemas.py          # WhaleEvent 数据模型
 │       ├── store.py            # 内存事件缓存（deque，防重复）
-│       ├── clients.py          # HTTP 客户端（Etherscan / Solana RPC / Binance）
+│       ├── clients.py          # HTTP 客户端（Etherscan / ZAN ETH/SOL RPC / Binance）
 │       ├── detector.py         # 大额转账识别逻辑（ETH + SOL）
-│       ├── poller.py           # 定时轮询（ETH 主监控；SOL WS 启用时轮询自动关闭）
+│       ├── poller.py           # 定时轮询（ETH/SOL HTTP 轮询；WS 启用时自动关闭对应轮询）
+│       ├── eth_ws.py           # ZAN Ethereum WebSocket 订阅（newHeads，优先级 1）
 │       ├── sol_ws.py           # ZAN Solana WebSocket 流式订阅（blockSubscribe，优先级 1）
 │       ├── sol_grpc.py         # ZAN Solana gRPC 流式订阅（Yellowstone，优先级 2）
 │       └── proto_gen/          # 自动生成的 gRPC Python 存根
@@ -141,29 +142,39 @@ npm run dev
 
 ## 配置说明
 
-编辑 `backend/.env`：
+编辑 `backend/.env`（全部为明文配置，直接从 ZAN 控制台复制 URL 即可）：
 
 ```env
-# ── 以太坊 ────────────────────────────────────────────────
+# ── 以太坊（Etherscan，可选，ZAN WS 开启后基本不用）──────────────────────
 ETHERSCAN_API_KEY=your_etherscan_api_key   # 申请：https://etherscan.io
-ETH_POLL_SECONDS=4                          # ETH 区块拉取间隔（秒）
+ETH_POLL_SECONDS=4                         # ETH 区块拉取间隔（秒）
 
-# ── Solana 优先级 1：WebSocket blockSubscribe（实时，开箱即用）─
-ZAN_API_KEY=25a51188cb25466986e5d7e48c6217e9
-ZAN_SOL_WS_URL=wss://api.zan.top/node/ws/v1/solana/mainnet/25a51188cb25466986e5d7e48c6217e9
-ZAN_WS_ENABLED=true        # 开启后 Solana JSON-RPC 轮询自动停用
+# ── ZAN API Key（明文）───────────────────────────────────────────────────
+ZAN_API_KEY=your_zan_api_key_here
 
-# ── Solana 优先级 2：JSON-RPC 轮询（WS 关闭时自动启用）────
-ZAN_SOL_RPC_URL=https://api.zan.top/node/v1/solana/mainnet/25a51188cb25466986e5d7e48c6217e9
-SOL_POLL_SECONDS=8          # Solana 轮询间隔（秒，WS 关闭时生效）
+# ── ZAN 节点完整 URL（直接从 ZAN 控制台复制，已包含 apiKey）────────────
+# ETH 优先级 1：WebSocket newHeads（实时）
+ZAN_ETH_WS_URL=wss://api.zan.top/node/ws/v1/eth/mainnet/your_zan_api_key_here
+ZAN_ETH_WS_ENABLED=true
 
-# ── Solana 优先级 3：gRPC Yellowstone（需 ZAN 控制台开通）──
+# ETH 优先级 2：JSON-RPC HTTP（WS 关闭时自动启用）
+ZAN_ETH_RPC_URL=https://api.zan.top/node/v1/eth/mainnet/your_zan_api_key_here
+
+# SOL 优先级 1：WebSocket blockSubscribe（实时）
+ZAN_SOL_WS_URL=wss://api.zan.top/node/ws/v1/solana/mainnet/your_zan_api_key_here
+ZAN_WS_ENABLED=true
+
+# SOL 优先级 2：JSON-RPC HTTP（WS 关闭时自动启用）
+ZAN_SOL_RPC_URL=https://api.zan.top/node/v1/solana/mainnet/your_zan_api_key_here
+SOL_POLL_SECONDS=8
+
+# SOL 优先级 3：gRPC Yellowstone（需 ZAN 控制台开通 Geyser 权限）
 ZAN_GRPC_ENDPOINT=grpc.zan.top:443
-ZAN_GRPC_ENABLED=false     # 未开通 gRPC 时保持 false；WS 已满足实时需求
+ZAN_GRPC_ENABLED=false
 
 # ── 阈值与存储 ────────────────────────────────────────────
 ETH_USD_THRESHOLD=100000   # 大额转账阈值（USD）
-EVENT_STORE_LIMIT=500       # 内存缓存事件数量上限
+EVENT_STORE_LIMIT=500      # 内存缓存事件数量上限
 CORS_ORIGINS=http://localhost:5173
 ```
 

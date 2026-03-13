@@ -24,3 +24,7 @@ class HealthResponse(BaseModel):
     latest_eth_block: int | None
     latest_sol_slot: int | None
     cached_events: int
+    eth_source: Literal["ws", "polling"] = "ws"
+    eth_ws_connected: bool = False
+    sol_source: Literal["ws", "polling"] = "ws"
+    sol_ws_connected: bool = False
