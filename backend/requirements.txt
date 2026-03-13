@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+httpx
+apscheduler
+pydantic
+pydantic-settings
+python-dotenv
+grpcio
+grpcio-tools
+base58

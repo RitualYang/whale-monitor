@@ -1,0 +1,96 @@
+:root {
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color-scheme: dark;
+  background: #0f1115;
+  color: #e7ecf2;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.page {
+  max-width: 1200px;
+  margin: 28px auto;
+  padding: 0 16px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.badge {
+  border: 1px solid #334155;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+.badge-connected {
+  color: #86efac;
+}
+
+.badge-disconnected,
+.badge-error {
+  color: #fda4af;
+}
+
+.error {
+  color: #fecaca;
+  margin-bottom: 8px;
+}
+
+.table-wrap {
+  border: 1px solid #1f2937;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  border-bottom: 1px solid #1f2937;
+  padding: 10px 8px;
+  font-size: 13px;
+  text-align: left;
+}
+
+th {
+  color: #93c5fd;
+  background: #0b1220;
+}
+
+tr:hover td {
+  background: #0b1325;
+}
+
+a {
+  color: #93c5fd;
+  text-decoration: none;
+}
+
+.usd {
+  color: #86efac;
+  font-weight: 600;
+}
+
+.empty {
+  text-align: center;
+  color: #94a3b8;
+}

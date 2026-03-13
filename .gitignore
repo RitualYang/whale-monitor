@@ -1,0 +1,27 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# 环境变量（含 API Key，不提交）
+backend/.env
+
+# 运行时文件
+.run/
+
+# 前端构建产物
+frontend/dist/
+frontend/node_modules/
+
+# macOS
+.DS_Store
+
+# IDE
+.cursor/
+.vscode/
+*.swp
