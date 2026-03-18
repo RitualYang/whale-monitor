@@ -44,7 +44,7 @@
 ## 项目结构
 
 ```
-ai-面试/
+whale-monitor/
 ├── start.sh                    # 一键启动脚本
 ├── stop.sh                     # 一键停止脚本
 ├── README.md                   # 本文档
