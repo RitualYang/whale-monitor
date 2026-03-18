@@ -77,6 +77,7 @@ def _detect_whale_from_block_tx(
             asset=asset,
             amount=sol_amount,
             usd_value=usd_value,
+            unit_price=sol_usd,
             explorer_url=f"{explorer}{sig}",
         )
     except Exception as exc:  # noqa: BLE001

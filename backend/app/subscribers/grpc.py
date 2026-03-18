@@ -75,6 +75,7 @@ def _detect_whale(
             asset=cfg.asset,
             amount=sol_amount,
             usd_value=usd_value,
+            unit_price=sol_usd,
             explorer_url=f"{cfg.explorer}{sig_b58}",
         )
     except Exception as exc:  # noqa: BLE001

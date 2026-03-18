@@ -16,6 +16,7 @@ class WhaleEvent(BaseModel):
     asset: str
     amount: float
     usd_value: float
+    unit_price: float = 0.0
     explorer_url: str
 
 

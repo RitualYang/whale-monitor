@@ -37,6 +37,7 @@ def parse_eth_whale_transfers(
                 asset=cfg.asset,
                 amount=eth_amount,
                 usd_value=usd_value,
+                unit_price=eth_usd,
                 explorer_url=f"{cfg.explorer}{tx_hash}",
             )
         )
@@ -89,6 +90,7 @@ def parse_solana_whale_transfers(
                     asset=cfg.asset,
                     amount=sol_amount,
                     usd_value=usd_value,
+                    unit_price=sol_usd,
                     explorer_url=f"{cfg.explorer}{tx_hash}",
                 )
             )

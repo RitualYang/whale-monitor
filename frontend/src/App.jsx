@@ -161,6 +161,7 @@ export default function App() {
               <th>From</th>
               <th>To</th>
               <th>Asset / Amount</th>
+              <th>Price</th>
               <th>Value (USD)</th>
             </tr>
           </thead>
@@ -177,12 +178,13 @@ export default function App() {
                 <td title={item.from_address}>{item.from_address.slice(0, 10)}...{item.from_address.slice(-8)}</td>
                 <td title={item.to_address}>{item.to_address.slice(0, 10)}...{item.to_address.slice(-8)}</td>
                 <td>{formatAmount(item.amount, item.asset)}</td>
+                <td className="price">{formatUsd(item.unit_price)}</td>
                 <td className="usd">{formatUsd(item.usd_value)}</td>
               </tr>
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={7} className="empty">
+                <td colSpan={8} className="empty">
                   No whale transfers detected yet
                 </td>
               </tr>
