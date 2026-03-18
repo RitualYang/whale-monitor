@@ -61,16 +61,19 @@ ai-面试/
 │   │   └── solana-storage.proto # Solana 交易结构定义
 │   └── app/
 │       ├── __init__.py
-│       ├── main.py             # FastAPI 应用入口、路由、WebSocket
-│       ├── config.py           # 环境变量配置加载（直接使用完整 ZAN URL）
-│       ├── schemas.py          # WhaleEvent 数据模型
+│       ├── main.py             # FastAPI 应用入口、路由、WebSocket、轮询调度
+│       ├── config.py           # ChainConfig 动态链配置 + Settings
+│       ├── schemas.py          # WhaleEvent / ChainHealth 数据模型
 │       ├── store.py            # 内存事件缓存（deque，防重复）
-│       ├── clients.py          # HTTP 客户端（Etherscan / ZAN ETH/SOL RPC / Binance）
-│       ├── detector.py         # 大额转账识别逻辑（ETH + SOL）
-│       ├── poller.py           # 定时轮询（ETH/SOL HTTP 轮询；WS 启用时自动关闭对应轮询）
-│       ├── eth_ws.py           # ZAN Ethereum WebSocket 订阅（newHeads，优先级 1）
-│       ├── sol_ws.py           # ZAN Solana WebSocket 流式订阅（blockSubscribe，优先级 1）
-│       ├── sol_grpc.py         # ZAN Solana gRPC 流式订阅（Yellowstone，优先级 2）
+│       ├── clients.py          # HTTP 客户端（Etherscan / ZAN ETH/SOL RPC）
+│       ├── price.py            # 动态价格客户端（Binance，按链配置自动获取）
+│       ├── detector.py         # 大额转账识别逻辑（接受 ChainConfig）
+│       ├── subscribers/        # 实时数据源订阅器
+│       │   ├── __init__.py     # build_subscriber 工厂函数
+│       │   ├── base.py         # BaseSubscriber 抽象基类
+│       │   ├── evm_ws.py       # EVM WebSocket 订阅（newHeads）
+│       │   ├── solana_ws.py    # Solana WebSocket 订阅（blockSubscribe）
+│       │   └── grpc.py         # Solana gRPC 订阅（Yellowstone）
 │       └── proto_gen/          # 自动生成的 gRPC Python 存根
 │           ├── __init__.py
 │           ├── geyser_pb2.py
@@ -103,7 +106,7 @@ ai-面试/
 
 ```bash
 # 1. 进入项目根目录
-cd ai-面试
+cd whale-monitor
 
 # 2. 配置 API Key（首次运行）
 cp backend/.env.example backend/.env
@@ -142,39 +145,40 @@ npm run dev
 
 ## 配置说明
 
-编辑 `backend/.env`（全部为明文配置，直接从 ZAN 控制台复制 URL 即可）：
+编辑 `backend/.env`（添加新链只需在 `CHAINS` 追加名称并补充对应环境变量）：
 
 ```env
-# ── 以太坊（Etherscan，可选，ZAN WS 开启后基本不用）──────────────────────
-ETHERSCAN_API_KEY=your_etherscan_api_key   # 申请：https://etherscan.io
-ETH_POLL_SECONDS=4                         # ETH 区块拉取间隔（秒）
-
-# ── ZAN API Key（明文）───────────────────────────────────────────────────
+# ── ZAN API Key（明文，只需改这一处）────────────────────────────────────
 ZAN_API_KEY=your_zan_api_key_here
 
-# ── ZAN 节点完整 URL（直接从 ZAN 控制台复制，已包含 apiKey）────────────
-# ETH 优先级 1：WebSocket newHeads（实时）
-ZAN_ETH_WS_URL=wss://api.zan.top/node/ws/v1/eth/mainnet/your_zan_api_key_here
-ZAN_ETH_WS_ENABLED=true
+# ── 链列表（逗号分隔，添加新链只需在此追加并补充下方对应配置）──────────────
+CHAINS=ethereum,solana
 
-# ETH 优先级 2：JSON-RPC HTTP（WS 关闭时自动启用）
-ZAN_ETH_RPC_URL=https://api.zan.top/node/v1/eth/mainnet/your_zan_api_key_here
+# ── Ethereum ──────────────────────────────────────────────────────────
+ETHEREUM_CHAIN_TYPE=evm
+ETHEREUM_WS_URL=wss://api.zan.top/node/ws/v1/eth/mainnet
+ETHEREUM_RPC_URL=https://api.zan.top/node/v1/eth/mainnet
+ETHEREUM_SOURCE=ws
+ETHEREUM_USD_THRESHOLD=100000
+ETHEREUM_ASSET=ETH
+ETHEREUM_EXPLORER=https://etherscan.io/tx/
+ETHEREUM_POLL_SECONDS=4
 
-# SOL 优先级 1：WebSocket blockSubscribe（实时）
-ZAN_SOL_WS_URL=wss://api.zan.top/node/ws/v1/solana/mainnet/your_zan_api_key_here
-ZAN_WS_ENABLED=true
+# ── Solana ────────────────────────────────────────────────────────────
+SOLANA_CHAIN_TYPE=solana
+SOLANA_WS_URL=wss://api.zan.top/node/ws/v1/solana/mainnet
+SOLANA_RPC_URL=https://api.zan.top/node/v1/solana/mainnet
+SOLANA_SOURCE=ws
+SOLANA_USD_THRESHOLD=100000
+SOLANA_ASSET=SOL
+SOLANA_EXPLORER=https://solscan.io/tx/
+SOLANA_POLL_SECONDS=8
+SOLANA_GRPC_ENDPOINT=grpc.zan.top:443
+SOLANA_GRPC_ENABLED=false
 
-# SOL 优先级 2：JSON-RPC HTTP（WS 关闭时自动启用）
-ZAN_SOL_RPC_URL=https://api.zan.top/node/v1/solana/mainnet/your_zan_api_key_here
-SOL_POLL_SECONDS=8
-
-# SOL 优先级 3：gRPC Yellowstone（需 ZAN 控制台开通 Geyser 权限）
-ZAN_GRPC_ENDPOINT=grpc.zan.top:443
-ZAN_GRPC_ENABLED=false
-
-# ── 阈值与存储 ────────────────────────────────────────────
-ETH_USD_THRESHOLD=100000   # 大额转账阈值（USD）
-EVENT_STORE_LIMIT=500      # 内存缓存事件数量上限
+# ── 全局设置 ──────────────────────────────────────────────────────────
+ETHERSCAN_API_KEY=your_etherscan_api_key_here
+EVENT_STORE_LIMIT=500
 CORS_ORIGINS=http://localhost:5173
 ```
 

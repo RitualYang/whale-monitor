@@ -1,35 +1,24 @@
-"""
-ZAN Solana WebSocket subscriber using blockSubscribe (Solana pubsub).
-Streams confirmed blocks in real-time and emits WhaleEvent when a
-single SOL balance delta >= configured USD threshold.
-
-Priority: this is the PRIMARY Solana data source when available.
-Falls back to gRPC or JSON-RPC polling automatically.
+"""Solana WebSocket subscriber — generalized from sol_ws.py.
+Subscribes to blockSubscribe, detects whale transfers via balance deltas.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Callable
+from typing import Any
 
-from .config import settings
-from .schemas import WhaleEvent
-
-if TYPE_CHECKING:
-    from .store import EventStore
+from ..schemas import WhaleEvent
+from .base import BaseSubscriber
 
 logger = logging.getLogger(__name__)
 
 try:
-    import websockets
-    import websockets.asyncio.client as _ws_client
+    import websockets.asyncio.client as _ws_client  # noqa: F401
 
     _WS_AVAILABLE = True
 except ImportError:
     _WS_AVAILABLE = False
-    logger.warning("websockets not installed. Run: pip install websockets")
 
 
 def _detect_whale_from_block_tx(
@@ -37,11 +26,10 @@ def _detect_whale_from_block_tx(
     slot: int,
     sol_usd: float,
     threshold_usd: float,
+    chain_name: str,
+    asset: str,
+    explorer: str,
 ) -> WhaleEvent | None:
-    """
-    Parse a single transaction from a blockNotification and check
-    if any account received SOL above the threshold.
-    """
     try:
         meta = tx.get("meta") or {}
         pre: list[int] = meta.get("preBalances") or []
@@ -60,12 +48,10 @@ def _detect_whale_from_block_tx(
         if usd_value < threshold_usd:
             return None
 
-        # Extract tx signature and account keys
         tx_obj = tx.get("transaction") or {}
         signatures: list[str] = tx_obj.get("signatures") or []
         sig = signatures[0] if signatures else "unknown"
 
-        # Account keys may be plain strings or {"pubkey": ..., "signer": ...} dicts
         raw_keys = []
         msg = tx_obj.get("message") or {}
         raw_keys = msg.get("accountKeys") or []
@@ -82,84 +68,37 @@ def _detect_whale_from_block_tx(
         from_addr = _key(raw_keys[loss_idx]) if loss_idx < len(raw_keys) else "unknown"
 
         return WhaleEvent(
-            chain="solana",
+            chain=chain_name,
             tx_hash=sig,
             block_ref=str(slot),
             timestamp=datetime.now(timezone.utc),
             from_address=from_addr,
             to_address=to_addr,
-            asset="SOL",
+            asset=asset,
             amount=sol_amount,
             usd_value=usd_value,
-            explorer_url=f"https://solscan.io/tx/{sig}",
+            explorer_url=f"{explorer}{sig}",
         )
     except Exception as exc:  # noqa: BLE001
         logger.debug("WS tx parse error: %s", exc)
         return None
 
 
-class ZanSolanaWsSubscriber:
-    """
-    Real-time Solana block subscriber via ZAN WebSocket (blockSubscribe).
-    This is the highest-priority Solana data source.
-    """
-
-    WS_MAX_SIZE = 32 * 1024 * 1024  # 32 MB – blocks can be ~7 MB
-
-    def __init__(
-        self,
-        ws_url: str,
-        store: "EventStore",
-        on_event: Callable,
-        sol_usd_getter: Callable[[], float],
-    ) -> None:
-        self.ws_url = ws_url
-        self.store = store
-        self.on_event = on_event
-        self.sol_usd_getter = sol_usd_getter
-        self._task: asyncio.Task | None = None
-        self._running = False
-        self.latest_slot: int | None = None
-        self.total_seen: int = 0
-        self.total_whale: int = 0
-        self.connected: bool = False
-
-    # ── lifecycle ──────────────────────────────────────────────────────────────
+class SolanaWsSubscriber(BaseSubscriber):
+    WS_MAX_SIZE = 32 * 1024 * 1024
 
     def start(self) -> None:
         if not _WS_AVAILABLE:
-            logger.error("websockets library not installed. Cannot start WS subscriber.")
+            logger.error("[%s] websockets not installed.", self.cfg.name)
             return
-        self._running = True
-        self._task = asyncio.create_task(self._run_with_retry())
-        logger.info("Solana WS subscriber started -> %s", self.ws_url)
+        super().start()
+        logger.info("[%s] Solana WS subscriber started -> %s", self.cfg.name, self.cfg.ws_url)
 
-    def stop(self) -> None:
-        self._running = False
-        self.connected = False
-        if self._task and not self._task.done():
-            self._task.cancel()
-
-    # ── internal ───────────────────────────────────────────────────────────────
-
-    async def _run_with_retry(self) -> None:
-        retry_delay = 2.0
-        while self._running:
-            try:
-                await self._stream()
-                retry_delay = 2.0
-            except asyncio.CancelledError:
-                return
-            except Exception as exc:  # noqa: BLE001
-                self.connected = False
-                logger.warning(
-                    "Solana WS disconnected: %s – retry in %.0fs", exc, retry_delay
-                )
-                await asyncio.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2, 60.0)
+    def _on_disconnect(self, exc: Exception, retry_delay: float) -> None:
+        logger.warning("[%s] Solana WS disconnected: %s – retry in %.0fs", self.cfg.name, exc, retry_delay)
 
     async def _stream(self) -> None:
-        import websockets.asyncio.client as ws_client  # local import for lazy load
+        import websockets.asyncio.client as ws_client
 
         sub_request = json.dumps({
             "jsonrpc": "2.0",
@@ -169,7 +108,7 @@ class ZanSolanaWsSubscriber:
                 "all",
                 {
                     "commitment": "confirmed",
-                    "encoding": "jsonParsed",
+                    "encoding": "json",
                     "transactionDetails": "full",
                     "maxSupportedTransactionVersion": 0,
                     "showRewards": False,
@@ -178,15 +117,14 @@ class ZanSolanaWsSubscriber:
         })
 
         async with ws_client.connect(
-            self.ws_url,
+            self.cfg.ws_url,
             max_size=self.WS_MAX_SIZE,
             ping_interval=30,
             ping_timeout=20,
             open_timeout=20,
         ) as ws:
             await ws.send(sub_request)
-            self.connected = True
-            logger.info("Solana WS blockSubscribe sent, awaiting subscription ID…")
+            logger.info("[%s] blockSubscribe sent, awaiting subscription ID…", self.cfg.name)
 
             async for raw in ws:
                 if not self._running:
@@ -201,9 +139,9 @@ class ZanSolanaWsSubscriber:
         except Exception:
             return
 
-        # Subscription confirm
         if "result" in data and "id" in data:
-            logger.info("Solana WS subscription confirmed (id=%s)", data.get("result"))
+            self.connected = True
+            logger.info("[%s] WS subscription confirmed (id=%s)", self.cfg.name, data.get("result"))
             return
 
         if data.get("method") != "blockNotification":
@@ -216,25 +154,30 @@ class ZanSolanaWsSubscriber:
         block: dict[str, Any] = value.get("block") or {}
         transactions: list[dict[str, Any]] = block.get("transactions") or []
 
-        self.latest_slot = slot
+        self.latest_ref = slot
         self.total_seen += len(transactions)
 
-        sol_usd = self.sol_usd_getter()
-        if sol_usd <= 0:
+        price = self.price_getter()
+        if price <= 0:
             return
 
         for tx in transactions:
             event = _detect_whale_from_block_tx(
                 tx=tx,
                 slot=slot,
-                sol_usd=sol_usd,
-                threshold_usd=settings.eth_usd_threshold,
+                sol_usd=price,
+                threshold_usd=self.cfg.usd_threshold,
+                chain_name=self.cfg.name,
+                asset=self.cfg.asset,
+                explorer=self.cfg.explorer,
             )
             if event and self.store.add(event):
                 self.total_whale += 1
                 logger.info(
-                    "Solana WS whale: %.2f SOL = $%.0f | %s",
+                    "[%s] whale: %.2f %s = $%.0f | %s",
+                    self.cfg.name,
                     event.amount,
+                    event.asset,
                     event.usd_value,
                     event.tx_hash[:16],
                 )

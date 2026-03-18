@@ -1,6 +1,6 @@
 export async function fetchInitialEvents(limit = 100) {
   const res = await fetch(`/api/events?limit=${limit}`);
-  if (!res.ok) throw new Error("加载事件失败");
+  if (!res.ok) throw new Error("Failed to load events");
   return res.json();
 }
 
@@ -11,16 +11,17 @@ export async function fetchHealth() {
 }
 
 /**
- * Switch ETH and/or SOL data source.
- * @param {{ eth_source?: "ws"|"polling", sol_source?: "ws"|"polling" }} patch
+ * Switch a chain's data source.
+ * @param {string} chain - chain name, e.g. "ethereum"
+ * @param {string} source - "ws" or "polling"
  */
-export async function setSource(patch) {
+export async function setSource(chain, source) {
   const res = await fetch("/api/source", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(patch),
+    body: JSON.stringify({ chain, source }),
   });
-  if (!res.ok) throw new Error("切换数据源失败");
+  if (!res.ok) throw new Error("Failed to switch source");
   return res.json();
 }
 

@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .schemas import WhaleEvent
+
+if TYPE_CHECKING:
+    from .config import ChainConfig
 
 
 def parse_eth_whale_transfers(
     block: dict[str, Any],
     eth_usd: float,
-    threshold_usd: float,
+    cfg: ChainConfig,
 ) -> list[WhaleEvent]:
     block_number = int(block["number"], 16)
     timestamp = datetime.fromtimestamp(int(block["timestamp"], 16), tz=timezone.utc)
@@ -20,21 +23,21 @@ def parse_eth_whale_transfers(
             continue
         eth_amount = wei_value / 10**18
         usd_value = eth_amount * eth_usd
-        if usd_value < threshold_usd:
+        if usd_value < cfg.usd_threshold:
             continue
         tx_hash = tx.get("hash", "")
         events.append(
             WhaleEvent(
-                chain="ethereum",
+                chain=cfg.name,
                 tx_hash=tx_hash,
                 block_ref=str(block_number),
                 timestamp=timestamp,
                 from_address=tx.get("from", ""),
                 to_address=tx.get("to") or "contract_creation",
-                asset="ETH",
+                asset=cfg.asset,
                 amount=eth_amount,
                 usd_value=usd_value,
-                explorer_url=f"https://etherscan.io/tx/{tx_hash}",
+                explorer_url=f"{cfg.explorer}{tx_hash}",
             )
         )
     return events
@@ -44,7 +47,7 @@ def parse_solana_whale_transfers(
     slot: int,
     block: dict[str, Any] | None,
     sol_usd: float,
-    threshold_usd: float,
+    cfg: ChainConfig,
 ) -> list[WhaleEvent]:
     if not block:
         return []
@@ -73,20 +76,20 @@ def parse_solana_whale_transfers(
                 continue
             sol_amount = float(lamports) / 10**9
             usd_value = sol_amount * sol_usd
-            if usd_value < threshold_usd:
+            if usd_value < cfg.usd_threshold:
                 continue
             events.append(
                 WhaleEvent(
-                    chain="solana",
+                    chain=cfg.name,
                     tx_hash=tx_hash,
                     block_ref=str(slot),
                     timestamp=timestamp,
                     from_address=info.get("source", ""),
                     to_address=info.get("destination", ""),
-                    asset="SOL",
+                    asset=cfg.asset,
                     amount=sol_amount,
                     usd_value=usd_value,
-                    explorer_url=f"https://solscan.io/tx/{tx_hash}",
+                    explorer_url=f"{cfg.explorer}{tx_hash}",
                 )
             )
     return events

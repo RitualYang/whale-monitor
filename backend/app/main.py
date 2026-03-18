@@ -1,22 +1,41 @@
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import asynccontextmanager
-from typing import Any, Literal
+from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from .clients import EtherscanClient, PriceClient, SolanaClient, ZanEthClient
-from .config import settings
-from .eth_ws import ZanEthWsSubscriber
-from .poller import ChainPoller
-from .schemas import HealthResponse, WhaleEvent
-from .sol_grpc import ZanSolanaGrpcSubscriber
-from .sol_ws import ZanSolanaWsSubscriber
+from .clients import SolanaClient, ZanEthClient
+from .config import ChainConfig, chain_configs, settings
+from .detector import parse_eth_whale_transfers, parse_solana_whale_transfers
+from .price import PriceClient
+from .schemas import ChainHealth, HealthResponse, WhaleEvent
 from .store import EventStore
+from .subscribers import build_subscriber
+from .subscribers.base import BaseSubscriber
+
+# ── logging with timestamps ───────────────────────────────────────────────────
+logging.basicConfig(
+    format="%(asctime)s %(levelname)-5s %(name)s  %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    level=logging.INFO,
+)
+logger = logging.getLogger(__name__)
+
+
+def _mask_url(url: str) -> str:
+    """Mask API key in URL for safe logging: keep first 4 and last 4 chars."""
+    parts = url.rsplit("/", 1)
+    if len(parts) == 2 and len(parts[1]) > 8:
+        key = parts[1]
+        return f"{parts[0]}/{key[:4]}****{key[-4:]}"
+    return url
 
 
 class WsHub:
@@ -46,90 +65,185 @@ class WsHub:
 
 store = EventStore(limit=settings.event_store_limit)
 ws_hub = WsHub()
-state: dict[str, Any] = {}
+
+# Runtime state — keyed by chain name
+subscribers: dict[str, BaseSubscriber] = {}
+chain_sources: dict[str, str] = {}  # chain_name → "ws" | "polling"
+poller_jobs: dict[str, str] = {}  # chain_name → scheduler job id
+
+# Shared references set during lifespan, used by set_source
+_scheduler: AsyncIOScheduler | None = None
+_http_client: httpx.AsyncClient | None = None
+_price_client: PriceClient | None = None
 
 
 class SourceRequest(BaseModel):
-    eth_source: Literal["ws", "polling"] | None = None
-    sol_source: Literal["ws", "polling"] | None = None
+    chain: str
+    source: str  # "ws" or "polling"
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    global _scheduler, _http_client, _price_client
+
     http_client = httpx.AsyncClient()
-    price_client = PriceClient(http_client)
+    price_client = PriceClient(http_client, chain_configs)
+    scheduler = AsyncIOScheduler()
 
-    # Choose ETH HTTP client: ZAN JSON-RPC (preferred) or Etherscan (legacy)
-    eth_http_client = ZanEthClient(http_client, settings.resolved_eth_rpc_url())
+    _http_client = http_client
+    _price_client = price_client
+    _scheduler = scheduler
 
-    # JSON-RPC poller — ETH and SOL HTTP polling (disabled per-chain when WS is active)
-    poller = ChainPoller(
-        eth_client=eth_http_client,
-        sol_client=SolanaClient(http_client, settings.resolved_sol_rpc_url()),
-        price_client=price_client,
-        store=store,
-        on_event=ws_hub.broadcast_event,
-        eth_polling_enabled=not settings.zan_eth_ws_enabled,
-        sol_polling_enabled=not settings.zan_ws_enabled,
-    )
+    await price_client.refresh()
 
-    # ETH Priority 1 — WebSocket newHeads (real-time, no extra permissions)
-    eth_ws = ZanEthWsSubscriber(
-        ws_url=settings.resolved_eth_ws_url(),
-        store=store,
-        on_event=ws_hub.broadcast_event,
-        eth_usd_getter=lambda: poller.prices.get("ETH", 0.0),
-    )
+    for cfg in chain_configs:
+        chain_sources[cfg.name] = cfg.source
+        logger.info("[%s] type=%s source=%s ws=%s rpc=%s", cfg.name, cfg.chain_type, cfg.source, _mask_url(cfg.ws_url), _mask_url(cfg.rpc_url))
 
-    # SOL Priority 1 — WebSocket blockSubscribe (real-time, no extra permissions)
-    sol_ws = ZanSolanaWsSubscriber(
-        ws_url=settings.resolved_sol_ws_url(),
-        store=store,
-        on_event=ws_hub.broadcast_event,
-        sol_usd_getter=lambda: poller.prices.get("SOL", 0.0),
-    )
+        # Always build WS/gRPC subscriber so it's available for runtime switching
+        sub = build_subscriber(
+            cfg=cfg,
+            store=store,
+            on_event=ws_hub.broadcast_event,
+            price_getter=lambda a=cfg.asset: price_client.get(a),
+        )
+        if sub:
+            subscribers[cfg.name] = sub
+            # Only start if source is ws
+            if cfg.source == "ws":
+                sub.start()
 
-    # SOL Priority 2 — gRPC Yellowstone (needs ZAN dashboard activation)
-    sol_grpc = ZanSolanaGrpcSubscriber(
-        grpc_endpoint=settings.zan_grpc_endpoint,
-        api_key=settings.zan_api_key,
-        store=store,
-        on_event=ws_hub.broadcast_event,
-        sol_usd_getter=lambda: poller.prices.get("SOL", 0.0),
-    )
+        # HTTP polling (runs when source is "polling")
+        if cfg.source == "polling":
+            _add_poll_job(scheduler, cfg, http_client, price_client)
 
-    state["poller"] = poller
-    state["eth_ws"] = eth_ws
-    state["sol_ws"] = sol_ws
-    state["sol_grpc"] = sol_grpc
-    state["eth_source"] = "ws" if settings.zan_eth_ws_enabled else "polling"
-    state["sol_source"] = "ws" if settings.zan_ws_enabled else "polling"
-
-    await poller.refresh_prices()
-    poller.start()
-
-    # WS 始终保持监听，只由配置开关决定是否启用
-    if settings.zan_eth_ws_enabled:
-        eth_ws.start()
-
-    if settings.zan_ws_enabled:
-        sol_ws.start()
-
-    if settings.zan_grpc_enabled:
-        sol_grpc.start()
+    # Price refresh every 20s
+    scheduler.add_job(price_client.refresh, "interval", seconds=20)
+    scheduler.start()
 
     try:
         yield
     finally:
-        if settings.zan_eth_ws_enabled:
-            eth_ws.stop()
-        if settings.zan_ws_enabled:
-            sol_ws.stop()
-        if settings.zan_grpc_enabled:
-            sol_grpc.stop()
-        poller.stop()
+        for sub in subscribers.values():
+            sub.stop()
+        scheduler.shutdown(wait=False)
+        _scheduler = None
+        _http_client = None
+        _price_client = None
         await http_client.aclose()
 
+
+def _add_poll_job(
+    scheduler: AsyncIOScheduler,
+    cfg: ChainConfig,
+    http_client: httpx.AsyncClient,
+    price_client: PriceClient,
+) -> None:
+    """Register a polling job for the given chain."""
+    job_id = f"poll_{cfg.name}"
+
+    # Skip if already running
+    if scheduler.get_job(job_id):
+        return
+
+    if cfg.chain_type == "evm":
+        client = ZanEthClient(http_client, cfg.rpc_url)
+
+        async def poll_evm(c=client, cf=cfg, pc=price_client):
+            await _poll_evm_chain(c, cf, pc)
+
+        scheduler.add_job(
+            poll_evm, "interval", seconds=cfg.poll_seconds,
+            max_instances=1, coalesce=True, id=job_id,
+        )
+    elif cfg.chain_type == "solana":
+        client = SolanaClient(http_client, cfg.rpc_url)
+
+        async def poll_sol(c=client, cf=cfg, pc=price_client):
+            await _poll_solana_chain(c, cf, pc)
+
+        scheduler.add_job(
+            poll_sol, "interval", seconds=cfg.poll_seconds,
+            max_instances=1, coalesce=True, id=job_id,
+        )
+
+    poller_jobs[cfg.name] = job_id
+    logger.info("[%s] polling enabled (every %ds)", cfg.name, cfg.poll_seconds)
+
+
+def _remove_poll_job(chain_name: str) -> None:
+    """Remove a polling job if it exists."""
+    job_id = poller_jobs.pop(chain_name, None)
+    if job_id and _scheduler:
+        job = _scheduler.get_job(job_id)
+        if job:
+            job.remove()
+            logger.info("[%s] polling disabled", chain_name)
+
+
+# ── polling helpers ───────────────────────────────────────────────────────────
+
+_latest_refs: dict[str, int | None] = {}  # chain_name → latest block/slot
+
+
+async def _poll_evm_chain(
+    client: ZanEthClient, cfg: ChainConfig, price_client: PriceClient,
+) -> None:
+    try:
+        price = price_client.get(cfg.asset)
+        if price <= 0:
+            await price_client.refresh()
+            price = price_client.get(cfg.asset)
+        latest = await client.get_latest_block_number()
+        prev = _latest_refs.get(cfg.name)
+        if prev is None:
+            _latest_refs[cfg.name] = latest - 1
+            prev = latest - 1
+        for block_num in range(prev + 1, latest + 1):
+            block = await client.get_block_by_number(block_num)
+            events = parse_eth_whale_transfers(block=block, eth_usd=price, cfg=cfg)
+            await _publish(events)
+            _latest_refs[cfg.name] = block_num
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[%s] poll failed: %s", cfg.name, exc)
+
+
+async def _poll_solana_chain(
+    client: SolanaClient, cfg: ChainConfig, price_client: PriceClient,
+) -> None:
+    try:
+        price = price_client.get(cfg.asset)
+        if price <= 0:
+            await price_client.refresh()
+            price = price_client.get(cfg.asset)
+        latest = await client.get_slot()
+        prev = _latest_refs.get(cfg.name)
+        if prev is None:
+            _latest_refs[cfg.name] = latest - 1
+            prev = latest - 1
+            logger.info("[%s] JSON-RPC online, latest slot: %d", cfg.name, latest)
+        start = prev + 1
+        end = min(latest, start + 4)
+        for slot in range(start, end + 1):
+            block = await client.get_block(slot)
+            events = parse_solana_whale_transfers(slot=slot, block=block, sol_usd=price, cfg=cfg)
+            await _publish(events)
+            _latest_refs[cfg.name] = slot
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[%s] poll failed: %s", cfg.name, exc)
+
+
+async def _publish(events: list[WhaleEvent]) -> None:
+    for event in events:
+        if store.add(event):
+            logger.info(
+                "[%s] whale: %.4f %s = $%.0f | %s",
+                event.chain, event.amount, event.asset, event.usd_value, event.tx_hash[:16],
+            )
+            await ws_hub.broadcast_event(event)
+
+
+# ── FastAPI app ───────────────────────────────────────────────────────────────
 
 app = FastAPI(title="Multi-Chain Whale Transfer Monitor", lifespan=lifespan)
 app.add_middleware(
@@ -143,55 +257,47 @@ app.add_middleware(
 
 @app.get("/api/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
-    poller: ChainPoller = state["poller"]
-    eth_ws: ZanEthWsSubscriber = state["eth_ws"]
-    sol_ws: ZanSolanaWsSubscriber = state["sol_ws"]
-    sol_grpc: ZanSolanaGrpcSubscriber = state["sol_grpc"]
-    latest_eth = eth_ws.latest_block or poller.latest_eth_block
-    latest_sol = sol_ws.latest_slot or sol_grpc.latest_slot or poller.latest_sol_slot
-    return HealthResponse(
-        status="ok",
-        latest_eth_block=latest_eth,
-        latest_sol_slot=latest_sol,
-        cached_events=store.size,
-        eth_source=state["eth_source"],
-        eth_ws_connected=eth_ws.connected,
-        sol_source=state["sol_source"],
-        sol_ws_connected=sol_ws.connected,
-    )
+    chains: list[ChainHealth] = []
+    for cfg in chain_configs:
+        sub = subscribers.get(cfg.name)
+        chains.append(ChainHealth(
+            name=cfg.name,
+            source=chain_sources.get(cfg.name, cfg.source),
+            connected=sub.connected if sub else False,
+            latest_ref=sub.latest_ref if sub else _latest_refs.get(cfg.name),
+        ))
+    return HealthResponse(status="ok", cached_events=store.size, chains=chains)
 
 
 @app.post("/api/source")
 async def set_source(req: SourceRequest) -> dict[str, Any]:
-    """Switch ETH or SOL *preferred*数据源（仅控制是否开启 HTTP 轮询，WS 始终保持监听）."""
-    poller: ChainPoller = state["poller"]
-    eth_ws: ZanEthWsSubscriber = state["eth_ws"]
-    sol_ws: ZanSolanaWsSubscriber = state["sol_ws"]
-    changed: list[str] = []
+    """Switch a chain's preferred data source at runtime."""
+    cfg = next((c for c in chain_configs if c.name == req.chain), None)
+    if not cfg:
+        return {"error": f"unknown chain: {req.chain}"}
 
-    if req.eth_source and req.eth_source != state["eth_source"]:
-        if req.eth_source == "ws":
-            # WS 始终保持监听，这里只关闭 ETH HTTP 轮询以减少请求
-            poller.disable_eth_polling()
-        else:
-            # 选择轮询时，开启 ETH HTTP 轮询，WS 仍继续作为备份通道
-            poller.enable_eth_polling()
-        state["eth_source"] = req.eth_source
-        changed.append(f"eth→{req.eth_source}")
+    old = chain_sources.get(cfg.name, cfg.source)
+    if req.source == old:
+        return {"chain": cfg.name, "source": old, "changed": False}
 
-    if req.sol_source and req.sol_source != state["sol_source"]:
-        if req.sol_source == "ws":
-            poller.disable_sol_polling()
-        else:
-            poller.enable_sol_polling()
-        state["sol_source"] = req.sol_source
-        changed.append(f"sol→{req.sol_source}")
+    chain_sources[cfg.name] = req.source
+    sub = subscribers.get(cfg.name)
 
-    return {
-        "eth_source": state["eth_source"],
-        "sol_source": state["sol_source"],
-        "changed": changed or ["no change"],
-    }
+    if req.source == "ws":
+        # Stop polling, start WS subscriber
+        _remove_poll_job(cfg.name)
+        if sub:
+            sub.start()
+            logger.info("[%s] switched to WS", cfg.name)
+    elif req.source == "polling":
+        # Stop WS subscriber, start polling
+        if sub:
+            sub.stop()
+        if _scheduler and _http_client and _price_client:
+            _add_poll_job(_scheduler, cfg, _http_client, _price_client)
+        logger.info("[%s] switched to polling", cfg.name)
+
+    return {"chain": cfg.name, "source": req.source, "changed": True}
 
 
 @app.get("/api/events", response_model=list[WhaleEvent])

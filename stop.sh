@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 一键停止所有服务
+# Stop all services
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 PID_FILE="$ROOT/.run/pids"
@@ -9,12 +9,11 @@ info() { echo -e "${GREEN}[stop]${NC} $*"; }
 warn() { echo -e "${YELLOW}[warn]${NC} $*"; }
 
 if [ ! -f "$PID_FILE" ]; then
-  warn "未找到 .run/pids，服务可能未在运行"
-  # 兜底：按端口强制清理
+  warn "No .run/pids found — services may not be running"
   for PORT in 8000 5173; do
     PID=$(lsof -ti tcp:$PORT 2>/dev/null) || true
     if [ -n "$PID" ]; then
-      info "强制终止占用端口 $PORT 的进程 (PID: $PID)"
+      info "Killing process on port $PORT (PID: $PID)"
       kill -TERM $PID 2>/dev/null || true
     fi
   done
@@ -24,22 +23,21 @@ fi
 while IFS='=' read -r name pid; do
   [ -z "$pid" ] && continue
   if kill -0 "$pid" 2>/dev/null; then
-    info "停止 $name (PID: $pid)..."
+    info "Stopping $name (PID: $pid)..."
     kill -TERM "$pid" 2>/dev/null || true
-    # 等待最多 5 秒后强制
     for i in $(seq 1 5); do
       sleep 1
       kill -0 "$pid" 2>/dev/null || break
       if [ $i -eq 5 ]; then
-        warn "$name 未响应 SIGTERM，发送 SIGKILL"
+        warn "$name did not respond to SIGTERM, sending SIGKILL"
         kill -9 "$pid" 2>/dev/null || true
       fi
     done
-    info "$name 已停止"
+    info "$name stopped"
   else
-    warn "$name (PID: $pid) 已不在运行"
+    warn "$name (PID: $pid) is not running"
   fi
 done < "$PID_FILE"
 
 rm -f "$PID_FILE"
-info "所有服务已停止"
+info "All services stopped"

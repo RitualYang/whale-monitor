@@ -8,23 +8,89 @@ __pycache__/
 dist/
 build/
 
-# 环境变量（含 API Key，不提交）
+# Virtual environments
+.env
+venv/
+ENV/
+env/
+*.env.backup
+venv.bak/
+
+# Sensitive / secret files (never commit)
 backend/.env
+backend/.zan.key          # ZAN Fernet master key (must NEVER be committed)
 
-# ZAN Fernet 主密钥（绝对不能提交）
-backend/.zan.key
-
-# 运行时文件
+# Runtime / temporary files
 .run/
 
-# 前端构建产物
+# Frontend build artifacts (if you have a frontend folder)
 frontend/dist/
 frontend/node_modules/
 
-# macOS
+# macOS system files
 .DS_Store
+.AppleDouble
+.LSOverride
 
-# IDE
-.cursor/
+# IDE / editor files
 .vscode/
+.cursor/
 *.swp
+*.swo
+*.swn
+
+# Byte-compiled / optimized files (expanded from above)
+*$py.class
+
+# Distribution / packaging
+*.egg
+.eggs/
+parts/
+sdist/
+var/
+wheels/
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+.pybuilder/
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# PEP 582
+__pypackages__/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+docs/plans/

@@ -38,7 +38,7 @@ class EtherscanClient:
 
 
 class ZanEthClient:
-    """Ethereum JSON-RPC client backed by ZAN's dedicated node (standard eth_*)."""
+    """Ethereum JSON-RPC client backed by ZAN's dedicated node."""
 
     def __init__(self, client: httpx.AsyncClient, rpc_url: str) -> None:
         self.client = client
@@ -96,35 +96,3 @@ class SolanaClient:
                 },
             ],
         )
-
-
-class PriceClient:
-    """
-    Price client backed by Binance public REST API (no key required).
-    Falls back to last known prices on error.
-    """
-
-    _SYMBOLS = {"ETH": "ETHUSDT", "SOL": "SOLUSDT"}
-
-    def __init__(self, client: httpx.AsyncClient) -> None:
-        self.client = client
-        self._base = "https://api.binance.com/api/v3/ticker/price"
-
-    async def get_prices(self) -> dict[str, float]:
-        symbols_json = '["ETHUSDT","SOLUSDT"]'
-        res = await self.client.get(
-            self._base,
-            params={"symbols": symbols_json},
-            timeout=10,
-        )
-        res.raise_for_status()
-        data: list[dict[str, str]] = res.json()
-        result: dict[str, float] = {}
-        for item in data:
-            symbol = item.get("symbol", "")
-            price = float(item.get("price", 0))
-            if symbol == "ETHUSDT":
-                result["ETH"] = price
-            elif symbol == "SOLUSDT":
-                result["SOL"] = price
-        return result

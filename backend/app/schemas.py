@@ -7,24 +7,26 @@ from pydantic import BaseModel, Field
 
 
 class WhaleEvent(BaseModel):
-    chain: Literal["ethereum", "solana"]
+    chain: str
     tx_hash: str
     block_ref: str
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     from_address: str
     to_address: str
-    asset: Literal["ETH", "SOL"]
+    asset: str
     amount: float
     usd_value: float
     explorer_url: str
 
 
+class ChainHealth(BaseModel):
+    name: str
+    source: str  # "ws" or "polling"
+    connected: bool = False
+    latest_ref: int | None = None
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok"]
-    latest_eth_block: int | None
-    latest_sol_slot: int | None
     cached_events: int
-    eth_source: Literal["ws", "polling"] = "ws"
-    eth_ws_connected: bool = False
-    sol_source: Literal["ws", "polling"] = "ws"
-    sol_ws_connected: bool = False
+    chains: list[ChainHealth] = []

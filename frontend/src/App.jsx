@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchHealth, fetchInitialEvents, setSource, subscribeEvents } from "./api";
 
 function formatUsd(value) {
-  return new Intl.NumberFormat("zh-CN", {
+  return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
     maximumFractionDigits: 2,
@@ -16,8 +16,9 @@ function formatAmount(amount, asset) {
 /** Single chain source toggle pill */
 function ChainToggle({ chain, source, wsConnected, onSwitch, disabled }) {
   const isWs = source === "ws";
+  const wsError = isWs && !wsConnected;
   return (
-    <div className="chain-toggle">
+    <div className={`chain-toggle${wsError ? " chain-error" : ""}`}>
       <span className="chain-label">{chain}</span>
       <div className="toggle-track">
         <button
@@ -25,10 +26,10 @@ function ChainToggle({ chain, source, wsConnected, onSwitch, disabled }) {
           onClick={() => !disabled && isWs && onSwitch(chain, "polling")}
           disabled={disabled || !isWs}
         >
-          轮询
+          Poll
         </button>
         <button
-          className={`toggle-option${isWs ? " active" : ""}`}
+          className={`toggle-option${isWs ? " active" : ""}${wsError ? " ws-error" : ""}`}
           onClick={() => !disabled && !isWs && onSwitch(chain, "ws")}
           disabled={disabled || isWs}
         >
@@ -37,8 +38,8 @@ function ChainToggle({ chain, source, wsConnected, onSwitch, disabled }) {
       </div>
       {isWs && (
         <span
-          className={`dot ${wsConnected ? "dot-on" : "dot-off"}`}
-          title={wsConnected ? "WS 已连接" : "WS 连接中…"}
+          className={`dot ${wsConnected ? "dot-on" : "dot-err"}`}
+          title={wsConnected ? "WS connected" : "WS disconnected, consider switching to Poll"}
         />
       )}
     </div>
@@ -49,13 +50,9 @@ export default function App() {
   const [events, setEvents] = useState([]);
   const [pushStatus, setPushStatus] = useState("connecting");
   const [error, setError] = useState("");
-  const [health, setHealth] = useState({
-    eth_source: "ws",
-    eth_ws_connected: false,
-    sol_source: "ws",
-    sol_ws_connected: false,
-  });
+  const [health, setHealth] = useState({ chains: [] });
   const [switching, setSwitching] = useState(false);
+  const [chainFilter, setChainFilter] = useState("all");
   const healthTimer = useRef(null);
 
   const refreshHealth = useCallback(() => {
@@ -69,7 +66,7 @@ export default function App() {
 
     fetchInitialEvents(120)
       .then((data) => { if (mounted) setEvents(data); })
-      .catch((e) => { if (mounted) setError(e.message || "初始化失败"); });
+      .catch((e) => { if (mounted) setError(e.message || "Init failed"); });
 
     const unsubscribe = subscribeEvents(
       (event) => {
@@ -91,20 +88,11 @@ export default function App() {
     };
   }, [refreshHealth]);
 
-  const handleSwitch = useCallback(async (chain, target) => {
+  const handleSwitch = useCallback(async (chainName, target) => {
     setSwitching(true);
     setError("");
     try {
-      const patch = chain === "ETH"
-        ? { eth_source: target }
-        : { sol_source: target };
-      await setSource(patch);
-      setHealth((prev) => ({
-        ...prev,
-        ...(chain === "ETH"
-          ? { eth_source: target, eth_ws_connected: false }
-          : { sol_source: target, sol_ws_connected: false }),
-      }));
+      await setSource(chainName, target);
       setTimeout(refreshHealth, 1500);
     } catch (e) {
       setError(e.message);
@@ -113,46 +101,67 @@ export default function App() {
     }
   }, [refreshHealth]);
 
-  const rows = useMemo(() => events, [events]);
+  const rows = useMemo(
+    () => chainFilter === "all" ? events : events.filter((e) => e.chain === chainFilter),
+    [events, chainFilter],
+  );
+
+  const chainNames = useMemo(
+    () => (health.chains || []).map((c) => c.name),
+    [health.chains],
+  );
 
   return (
     <div className="page">
       <header className="header">
-        <h1>多链大额转账监控</h1>
-        <div className="header-right">
-          <div className="source-panel">
-            <ChainToggle
-              chain="ETH"
-              source={health.eth_source}
-              wsConnected={health.eth_ws_connected}
-              onSwitch={handleSwitch}
-              disabled={switching}
-            />
-            <div className="divider" />
-            <ChainToggle
-              chain="SOL"
-              source={health.sol_source}
-              wsConnected={health.sol_ws_connected}
-              onSwitch={handleSwitch}
-              disabled={switching}
-            />
-          </div>
-          <div className={`badge badge-${pushStatus}`}>推送: {pushStatus}</div>
-        </div>
+        <h1>Whale Monitor</h1>
+        <div className={`badge badge-${pushStatus}`}>Push: {pushStatus}</div>
       </header>
+
+      <div className="chain-grid">
+        {(health.chains || []).map((c) => (
+          <ChainToggle
+            key={c.name}
+            chain={c.name}
+            source={c.source}
+            wsConnected={c.connected}
+            onSwitch={handleSwitch}
+            disabled={switching}
+          />
+        ))}
+      </div>
+
       {error && <div className="error">{error}</div>}
+
+      <div className="filter-bar">
+        <button
+          className={`filter-btn${chainFilter === "all" ? " active" : ""}`}
+          onClick={() => setChainFilter("all")}
+        >
+          All
+        </button>
+        {chainNames.map((name) => (
+          <button
+            key={name}
+            className={`filter-btn${chainFilter === name ? " active" : ""}`}
+            onClick={() => setChainFilter(name)}
+          >
+            {name}
+          </button>
+        ))}
+      </div>
 
       <div className="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>时间(UTC)</th>
-              <th>链</th>
-              <th>交易哈希</th>
+              <th>Time (UTC)</th>
+              <th>Chain</th>
+              <th>Tx Hash</th>
               <th>From</th>
               <th>To</th>
-              <th>资产/数量</th>
-              <th>估值(USD)</th>
+              <th>Asset / Amount</th>
+              <th>Value (USD)</th>
             </tr>
           </thead>
           <tbody>
@@ -174,7 +183,7 @@ export default function App() {
             {rows.length === 0 && (
               <tr>
                 <td colSpan={7} className="empty">
-                  暂无满足阈值的大额转账事件
+                  No whale transfers detected yet
                 </td>
               </tr>
             )}

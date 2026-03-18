@@ -14,8 +14,8 @@ body {
 }
 
 .page {
-  max-width: 1200px;
-  margin: 28px auto;
+  max-width: 1400px;
+  margin: 20px auto;
   padding: 0 16px;
 }
 
@@ -23,25 +23,20 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 14px;
-}
-
-.header-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+  margin-bottom: 12px;
 }
 
 h1 {
   margin: 0;
-  font-size: 22px;
+  font-size: 20px;
 }
 
 .badge {
   border: 1px solid #334155;
   border-radius: 999px;
-  padding: 6px 12px;
+  padding: 5px 12px;
   font-size: 12px;
+  flex-shrink: 0;
 }
 
 .badge-connected {
@@ -58,6 +53,147 @@ h1 {
   margin-bottom: 8px;
 }
 
+/* ── chain status grid ────────────────────────────────────────────────────── */
+
+.chain-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+  background: #111827;
+  border: 1px solid #1f2937;
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+.chain-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 8px;
+  background: #0f1115;
+  border: 1px solid #1f2937;
+}
+
+.chain-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: #94a3b8;
+  letter-spacing: 0.02em;
+  text-transform: capitalize;
+}
+
+.toggle-track {
+  display: flex;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 999px;
+  padding: 1px;
+  gap: 1px;
+}
+
+.toggle-option {
+  border: none;
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 10px;
+  cursor: pointer;
+  background: transparent;
+  color: #64748b;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+
+.toggle-option.active {
+  background: #2563eb;
+  color: #e7ecf2;
+}
+
+.toggle-option:disabled {
+  cursor: default;
+}
+
+.toggle-option:not(.active):not(:disabled):hover {
+  background: #273549;
+  color: #94a3b8;
+}
+
+.dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.dot-on {
+  background: #86efac;
+  box-shadow: 0 0 4px #86efac99;
+}
+
+.dot-err {
+  background: #f87171;
+  box-shadow: 0 0 4px #f8717199;
+  animation: pulse-err 1.5s infinite;
+}
+
+@keyframes pulse-err {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.dot-off {
+  background: #475569;
+}
+
+/* WS error state */
+.chain-error {
+  border-color: #7f1d1d;
+}
+
+.chain-error .chain-label {
+  color: #f87171;
+}
+
+.chain-error .toggle-option.ws-error.active {
+  background: #dc2626;
+}
+
+/* ── chain filter bar ─────────────────────────────────────────────────────── */
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 10px;
+}
+
+.filter-btn {
+  border: 1px solid #1f2937;
+  border-radius: 999px;
+  padding: 3px 12px;
+  font-size: 11px;
+  cursor: pointer;
+  background: #111827;
+  color: #94a3b8;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  text-transform: capitalize;
+}
+
+.filter-btn.active {
+  background: #1e3a5f;
+  color: #93c5fd;
+  border-color: #2563eb;
+}
+
+.filter-btn:not(.active):hover {
+  background: #1a2332;
+  color: #e7ecf2;
+}
+
+/* ── table ─────────────────────────────────────────────────────────────────── */
+
 .table-wrap {
   border: 1px solid #1f2937;
   border-radius: 10px;
@@ -72,8 +208,8 @@ table {
 th,
 td {
   border-bottom: 1px solid #1f2937;
-  padding: 10px 8px;
-  font-size: 13px;
+  padding: 8px 6px;
+  font-size: 12px;
   text-align: left;
 }
 
@@ -99,89 +235,4 @@ a {
 .empty {
   text-align: center;
   color: #94a3b8;
-}
-
-/* ── source panel (ETH + SOL toggles) ────────────────────────────────────── */
-
-.source-panel {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: #111827;
-  border: 1px solid #1f2937;
-  border-radius: 10px;
-  padding: 5px 10px;
-}
-
-.divider {
-  width: 1px;
-  height: 20px;
-  background: #1f2937;
-  flex-shrink: 0;
-}
-
-.chain-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.chain-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: #64748b;
-  letter-spacing: 0.03em;
-  min-width: 26px;
-}
-
-.toggle-track {
-  display: flex;
-  background: #1e293b;
-  border: 1px solid #334155;
-  border-radius: 999px;
-  padding: 2px;
-  gap: 2px;
-}
-
-.toggle-option {
-  border: none;
-  border-radius: 999px;
-  padding: 3px 10px;
-  font-size: 11px;
-  cursor: pointer;
-  background: transparent;
-  color: #64748b;
-  transition: background 0.15s, color 0.15s;
-  white-space: nowrap;
-}
-
-.toggle-option.active {
-  background: #2563eb;
-  color: #e7ecf2;
-}
-
-.toggle-option:disabled {
-  cursor: default;
-}
-
-.toggle-option:not(.active):not(:disabled):hover {
-  background: #273549;
-  color: #94a3b8;
-}
-
-.dot {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.dot-on {
-  background: #86efac;
-  box-shadow: 0 0 4px #86efac99;
-}
-
-.dot-off {
-  background: #475569;
 }
